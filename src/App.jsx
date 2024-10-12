@@ -36,17 +36,18 @@ const FloorModel = props => {
 
 const Scene = forwardRef((props, ref) => {
   const cameraRef = useRef()
-  const zoomDistance = useRef(30) // Distancia inicial de la cámara (zoom)
-  const angleRef = useRef(Math.PI / 2) // Ajuste del ángulo para comenzar a lo largo del eje X
-  const targetAngleRef = useRef(Math.PI / 2) // Ángulo objetivo
+  const zoomDistance = useRef(30)
+  const angleRef = useRef(Math.PI / 2)
+  const targetAngleRef = useRef(Math.PI / 2)
+  const targetZoomDistance = useRef(zoomDistance.current)
   const isAnimating = useRef(false)
   const isDragging = useRef(false)
   const previousMouseX = useRef(0)
   const previousMouseY = useRef(0)
+  const pinchStartDistance = useRef(0)
 
-  const cameraHeight = useRef(15) // Altura inicial (referencia mutable)
-
-  const zoomSpeed = 0.1 // Velocidad de la animación de zoom
+  const cameraHeight = useRef(15)
+  const zoomSpeed = 0.1
 
   useImperativeHandle(ref, () => ({
     rotateCameraLeft: () => {
@@ -63,13 +64,11 @@ const Scene = forwardRef((props, ref) => {
     }
   }))
 
-  // Actualiza el ángulo objetivo cuando se rota la cámara
   const updateTargetAngle = deltaAngle => {
     targetAngleRef.current += deltaAngle
     animateCameraRotation()
   }
 
-  // Función para animar la rotación de la cámara
   const animateCameraRotation = () => {
     if (isAnimating.current) return
 
@@ -95,14 +94,15 @@ const Scene = forwardRef((props, ref) => {
   }
 
   const animateZoom = delta => {
-    const targetZoom = THREE.MathUtils.clamp(
-      zoomDistance.current + delta,
-      20,
+    targetZoomDistance.current = THREE.MathUtils.clamp(
+      targetZoomDistance.current + delta,
+      15,
       50
-    ) // Limitar el zoom
+    )
 
     const zoomAnimate = () => {
-      zoomDistance.current += (targetZoom - zoomDistance.current) * zoomSpeed
+      zoomDistance.current +=
+        (targetZoomDistance.current - zoomDistance.current) * zoomSpeed
 
       const x = zoomDistance.current * Math.sin(angleRef.current)
       const z = zoomDistance.current * Math.cos(angleRef.current)
@@ -110,12 +110,12 @@ const Scene = forwardRef((props, ref) => {
       cameraRef.current.position.set(x, cameraHeight.current, z)
       cameraRef.current.lookAt(0, 5, 0)
 
-      if (Math.abs(targetZoom - zoomDistance.current) > 0.1) {
+      if (Math.abs(targetZoomDistance.current - zoomDistance.current) > 0.1) {
         requestAnimationFrame(zoomAnimate)
       }
     }
 
-    zoomAnimate()
+    requestAnimationFrame(zoomAnimate)
   }
 
   const handleMouseDown = event => {
@@ -153,6 +153,64 @@ const Scene = forwardRef((props, ref) => {
     isDragging.current = false
   }
 
+  const handleWheel = event => {
+    event.preventDefault()
+    const delta = event.deltaY > 0 ? 2 : -2
+    animateZoom(delta)
+  }
+
+  const getTouchDistance = touches => {
+    const dx = touches[0].clientX - touches[1].clientX
+    const dy = touches[0].clientY - touches[1].clientY
+    return Math.sqrt(dx * dx + dy * dy)
+  }
+
+  const handleTouchStart = event => {
+    event.preventDefault()
+    if (event.touches.length === 1) {
+      isDragging.current = true
+      previousMouseX.current = event.touches[0].clientX
+      previousMouseY.current = event.touches[0].clientY
+    } else if (event.touches.length === 2) {
+      pinchStartDistance.current = getTouchDistance(event.touches)
+    }
+  }
+
+  const handleTouchMove = event => {
+    event.preventDefault()
+    if (event.touches.length === 1 && isDragging.current) {
+      const deltaX = event.touches[0].clientX - previousMouseX.current
+      const deltaY = event.touches[0].clientY - previousMouseY.current
+
+      previousMouseX.current = event.touches[0].clientX
+      previousMouseY.current = event.touches[0].clientY
+
+      const rotationSpeed = 0.005
+      updateTargetAngle(-deltaX * rotationSpeed)
+
+      const verticalSpeed = 0.1
+      cameraHeight.current = THREE.MathUtils.clamp(
+        cameraHeight.current + deltaY * verticalSpeed,
+        5,
+        35
+      )
+
+      const x = zoomDistance.current * Math.sin(angleRef.current)
+      const z = zoomDistance.current * Math.cos(angleRef.current)
+      cameraRef.current.position.set(x, cameraHeight.current, z)
+      cameraRef.current.lookAt(0, 5, 0)
+    } else if (event.touches.length === 2) {
+      const currentDistance = getTouchDistance(event.touches)
+      const delta = pinchStartDistance.current - currentDistance
+      animateZoom(delta * 0.02)
+      pinchStartDistance.current = currentDistance
+    }
+  }
+
+  const handleTouchEnd = () => {
+    isDragging.current = false
+  }
+
   useEffect(() => {
     const camera = cameraRef.current
     if (camera) {
@@ -163,14 +221,28 @@ const Scene = forwardRef((props, ref) => {
       camera.lookAt(0, 5, 0)
     }
 
+    // Deshabilitar gestos de navegador en toda la página excepto el canvas
+    document.body.style.touchAction = 'none'
+
     window.addEventListener('mousedown', handleMouseDown)
     window.addEventListener('mousemove', handleMouseMove)
     window.addEventListener('mouseup', handleMouseUp)
+    window.addEventListener('wheel', handleWheel, { passive: false })
+
+    window.addEventListener('touchstart', handleTouchStart, { passive: false })
+    window.addEventListener('touchmove', handleTouchMove, { passive: false })
+    window.addEventListener('touchend', handleTouchEnd)
 
     return () => {
+      document.body.style.touchAction = '' // Restaurar el comportamiento por defecto al desmontar
       window.removeEventListener('mousedown', handleMouseDown)
       window.removeEventListener('mousemove', handleMouseMove)
       window.removeEventListener('mouseup', handleMouseUp)
+      window.removeEventListener('wheel', handleWheel)
+
+      window.removeEventListener('touchstart', handleTouchStart)
+      window.removeEventListener('touchmove', handleTouchMove)
+      window.removeEventListener('touchend', handleTouchEnd)
     }
   }, [])
 
@@ -213,14 +285,30 @@ const App = () => {
       <Scene ref={sceneRef} />
 
       <div style={{ position: 'absolute', top: 20, left: 20 }}>
-        <button onClick={() => sceneRef.current.rotateCameraRight()}>
+        <button
+          onMouseDown={() => sceneRef.current.rotateCameraRight()}
+          onTouchStart={() => sceneRef.current.rotateCameraRight()}
+        >
           Rotar Izquierda
         </button>
-        <button onClick={() => sceneRef.current.rotateCameraLeft()}>
+        <button
+          onMouseDown={() => sceneRef.current.rotateCameraLeft()}
+          onTouchStart={() => sceneRef.current.rotateCameraLeft()}
+        >
           Rotar Derecha
         </button>
-        <button onClick={() => sceneRef.current.zoomIn()}>Acercar</button>
-        <button onClick={() => sceneRef.current.zoomOut()}>Alejar</button>
+        <button
+          onMouseDown={() => sceneRef.current.zoomIn()}
+          onTouchStart={() => sceneRef.current.zoomIn()}
+        >
+          Acercar
+        </button>
+        <button
+          onMouseDown={() => sceneRef.current.zoomOut()}
+          onTouchStart={() => sceneRef.current.zoomOut()}
+        >
+          Alejar
+        </button>
       </div>
     </div>
   )
